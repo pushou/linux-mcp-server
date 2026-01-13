@@ -260,6 +260,9 @@ COMMANDS: Mapping[str, CommandGroup] = MappingProxyType(
                 "lsusb": CommandSpec(args=("lsusb",)),
             }
         ),
+        # === Suricata ===
+        # Note: Suricata tools are implemented directly in tools/suricata.py
+        # They don't use CommandSpec because they use Polars for NDJSON parsing
     }
 )
 

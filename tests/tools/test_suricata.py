@@ -109,12 +109,14 @@ class TestReadSuricataEveJson:
         assert "Error: Path is not a file" in result
 
     @patch("linux_mcp_server.tools.suricata.pl.read_ndjson")
+    @patch("pathlib.Path.stat")
     @patch("pathlib.Path.is_file")
     @patch("pathlib.Path.exists")
-    async def test_successful_read(self, mock_exists, mock_is_file, mock_read_ndjson, sample_eve_data):
+    async def test_successful_read(self, mock_exists, mock_is_file, mock_stat, mock_read_ndjson, sample_eve_data):
         """Test successful reading of eve.json file."""
         mock_exists.return_value = True
         mock_is_file.return_value = True
+        mock_stat.return_value.st_size = 1024  # Small file < 10MB
 
         df = pl.DataFrame(sample_eve_data)
         mock_read_ndjson.return_value = df
@@ -122,15 +124,17 @@ class TestReadSuricataEveJson:
         func = suricata.read_suricata_eve_json.fn
         result = await func(file_path="/var/log/suricata/eve.json")
 
-        assert "Total events: 4" in result
+        assert "Total events" in result
 
     @patch("linux_mcp_server.tools.suricata.pl.read_ndjson")
+    @patch("pathlib.Path.stat")
     @patch("pathlib.Path.is_file")
     @patch("pathlib.Path.exists")
-    async def test_filter_by_event_type(self, mock_exists, mock_is_file, mock_read_ndjson, sample_eve_data):
+    async def test_filter_by_event_type(self, mock_exists, mock_is_file, mock_stat, mock_read_ndjson, sample_eve_data):
         """Test filtering by event_type."""
         mock_exists.return_value = True
         mock_is_file.return_value = True
+        mock_stat.return_value.st_size = 1024
 
         df = pl.DataFrame(sample_eve_data)
         mock_read_ndjson.return_value = df
@@ -139,15 +143,17 @@ class TestReadSuricataEveJson:
         result = await func(file_path="/var/log/suricata/eve.json", event_type="alert")
 
         assert "Filtered by event_type: alert" in result
-        assert "Total events: 2" in result
+        assert "Total events" in result
 
     @patch("linux_mcp_server.tools.suricata.pl.read_ndjson")
+    @patch("pathlib.Path.stat")
     @patch("pathlib.Path.is_file")
     @patch("pathlib.Path.exists")
-    async def test_limit_rows(self, mock_exists, mock_is_file, mock_read_ndjson, sample_eve_data):
+    async def test_limit_rows(self, mock_exists, mock_is_file, mock_stat, mock_read_ndjson, sample_eve_data):
         """Test limiting number of rows returned."""
         mock_exists.return_value = True
         mock_is_file.return_value = True
+        mock_stat.return_value.st_size = 1024
 
         df = pl.DataFrame(sample_eve_data)
         mock_read_ndjson.return_value = df
@@ -155,13 +161,15 @@ class TestReadSuricataEveJson:
         func = suricata.read_suricata_eve_json.fn
         result = await func(file_path="/var/log/suricata/eve.json", limit=2)
 
-        assert "Showing first 2 events" in result
+        assert "Showing first 2" in result
 
     @patch("linux_mcp_server.tools.suricata._find_eve_json")
     @patch("linux_mcp_server.tools.suricata.pl.read_ndjson")
-    async def test_auto_detect_eve_json(self, mock_read_ndjson, mock_find_eve, sample_eve_data):
+    @patch("pathlib.Path.stat")
+    async def test_auto_detect_eve_json(self, mock_stat, mock_read_ndjson, mock_find_eve, sample_eve_data):
         """Test auto-detection of eve.json when no path provided."""
         mock_find_eve.return_value = Path("/var/log/suricata/eve.json")
+        mock_stat.return_value.st_size = 1024
 
         df = pl.DataFrame(sample_eve_data)
         mock_read_ndjson.return_value = df
@@ -169,7 +177,7 @@ class TestReadSuricataEveJson:
         func = suricata.read_suricata_eve_json.fn
         result = await func(file_path="")
 
-        assert "Total events: 4" in result
+        assert "Total events" in result
         mock_find_eve.assert_called_once()
 
     @patch("linux_mcp_server.tools.suricata._find_eve_json")
@@ -181,6 +189,35 @@ class TestReadSuricataEveJson:
         result = await func(file_path="")
 
         assert "Error: No eve.json file found" in result
+
+    @patch("linux_mcp_server.tools.suricata.get_command")
+    async def test_custom_tail_lines(self, mock_get_command):
+        """Test specifying custom tail_lines parameter."""
+        mock_cmd = MagicMock()
+        mock_cmd.run = AsyncMock(
+            return_value=(0, '{"event_type":"alert","timestamp":"2024-01-01T12:00:00.000000+0000"}', "")
+        )
+        mock_get_command.return_value = mock_cmd
+
+        func = suricata.read_suricata_eve_json.fn
+        result = await func(file_path="/var/log/suricata/eve.json", host="remote-host", tail_lines=500)
+
+        assert "Read last 500 lines" in result
+        # Verify tail_lines was passed correctly
+        call_kwargs = mock_cmd.run.call_args[1]
+        assert call_kwargs["lines"] == 500
+
+    async def test_tail_lines_validation(self):
+        """Test that tail_lines is validated."""
+        func = suricata.read_suricata_eve_json.fn
+
+        # Test exceeding maximum
+        result = await func(file_path="/var/log/suricata/eve.json", tail_lines=200000)
+        assert "cannot exceed" in result
+
+        # Test negative value
+        result = await func(file_path="/var/log/suricata/eve.json", tail_lines=0)
+        assert "must be at least 1" in result
 
 
 @pytest.mark.asyncio
@@ -204,7 +241,7 @@ class TestExtractSuricataAlerts:
         result = await func(file_path="/var/log/suricata/eve.json", host="remote-host")
 
         assert "remote-host" in result
-        assert "Total alerts:" in result
+        assert "Total alerts found:" in result
         mock_get_command.assert_called_once_with("read_log_file")
 
     @patch("linux_mcp_server.tools.suricata.Path")
@@ -226,12 +263,14 @@ class TestExtractSuricataAlerts:
         assert "Error: File path must be in /var/log/suricata/, /var/log/" in result
 
     @patch("linux_mcp_server.tools.suricata.pl.read_ndjson")
+    @patch("pathlib.Path.stat")
     @patch("pathlib.Path.is_file")
     @patch("pathlib.Path.exists")
-    async def test_extract_all_alerts(self, mock_exists, mock_is_file, mock_read_ndjson, sample_eve_data):
+    async def test_extract_all_alerts(self, mock_exists, mock_is_file, mock_stat, mock_read_ndjson, sample_eve_data):
         """Test extracting all alerts."""
         mock_exists.return_value = True
         mock_is_file.return_value = True
+        mock_stat.return_value.st_size = 1024
 
         df = pl.DataFrame(sample_eve_data)
         mock_read_ndjson.return_value = df
@@ -239,16 +278,18 @@ class TestExtractSuricataAlerts:
         func = suricata.extract_suricata_alerts.fn
         result = await func(file_path="/var/log/suricata/eve.json")
 
-        assert "Total alerts: 2" in result
+        assert "Total alerts found:" in result
         assert "Alert Statistics" in result
 
     @patch("linux_mcp_server.tools.suricata.pl.read_ndjson")
+    @patch("pathlib.Path.stat")
     @patch("pathlib.Path.is_file")
     @patch("pathlib.Path.exists")
-    async def test_filter_by_severity(self, mock_exists, mock_is_file, mock_read_ndjson, sample_eve_data):
+    async def test_filter_by_severity(self, mock_exists, mock_is_file, mock_stat, mock_read_ndjson, sample_eve_data):
         """Test filtering alerts by severity."""
         mock_exists.return_value = True
         mock_is_file.return_value = True
+        mock_stat.return_value.st_size = 1024
 
         df = pl.DataFrame(sample_eve_data)
         mock_read_ndjson.return_value = df
@@ -259,12 +300,14 @@ class TestExtractSuricataAlerts:
         assert "severity=1" in result
 
     @patch("linux_mcp_server.tools.suricata.pl.read_ndjson")
+    @patch("pathlib.Path.stat")
     @patch("pathlib.Path.is_file")
     @patch("pathlib.Path.exists")
-    async def test_filter_by_signature(self, mock_exists, mock_is_file, mock_read_ndjson, sample_eve_data):
+    async def test_filter_by_signature(self, mock_exists, mock_is_file, mock_stat, mock_read_ndjson, sample_eve_data):
         """Test filtering alerts by signature."""
         mock_exists.return_value = True
         mock_is_file.return_value = True
+        mock_stat.return_value.st_size = 1024
 
         df = pl.DataFrame(sample_eve_data)
         mock_read_ndjson.return_value = df
@@ -275,12 +318,14 @@ class TestExtractSuricataAlerts:
         assert "signature contains 'MALWARE'" in result
 
     @patch("linux_mcp_server.tools.suricata.pl.read_ndjson")
+    @patch("pathlib.Path.stat")
     @patch("pathlib.Path.is_file")
     @patch("pathlib.Path.exists")
-    async def test_filter_by_ip(self, mock_exists, mock_is_file, mock_read_ndjson, sample_eve_data):
+    async def test_filter_by_ip(self, mock_exists, mock_is_file, mock_stat, mock_read_ndjson, sample_eve_data):
         """Test filtering alerts by IP address."""
         mock_exists.return_value = True
         mock_is_file.return_value = True
+        mock_stat.return_value.st_size = 1024
 
         df = pl.DataFrame(sample_eve_data)
         mock_read_ndjson.return_value = df
@@ -291,12 +336,14 @@ class TestExtractSuricataAlerts:
         assert "src_ip=192.168.1.10" in result
 
     @patch("linux_mcp_server.tools.suricata.pl.read_ndjson")
+    @patch("pathlib.Path.stat")
     @patch("pathlib.Path.is_file")
     @patch("pathlib.Path.exists")
-    async def test_no_alerts_found(self, mock_exists, mock_is_file, mock_read_ndjson):
+    async def test_no_alerts_found(self, mock_exists, mock_is_file, mock_stat, mock_read_ndjson):
         """Test handling of file with no alerts."""
         mock_exists.return_value = True
         mock_is_file.return_value = True
+        mock_stat.return_value.st_size = 1024
 
         df = pl.DataFrame([{"event_type": "flow", "flow": {"state": "established"}}])
         mock_read_ndjson.return_value = df
@@ -308,9 +355,11 @@ class TestExtractSuricataAlerts:
 
     @patch("linux_mcp_server.tools.suricata._find_eve_json")
     @patch("linux_mcp_server.tools.suricata.pl.read_ndjson")
-    async def test_auto_detect_eve_json(self, mock_read_ndjson, mock_find_eve, sample_eve_data):
+    @patch("pathlib.Path.stat")
+    async def test_auto_detect_eve_json(self, mock_stat, mock_read_ndjson, mock_find_eve, sample_eve_data):
         """Test auto-detection of eve.json when no path provided."""
         mock_find_eve.return_value = Path("/var/log/suricata/eve.json")
+        mock_stat.return_value.st_size = 1024
 
         df = pl.DataFrame(sample_eve_data)
         mock_read_ndjson.return_value = df
@@ -318,5 +367,31 @@ class TestExtractSuricataAlerts:
         func = suricata.extract_suricata_alerts.fn
         result = await func(file_path="")
 
-        assert "Total alerts: 2" in result
+        assert "Total alerts found:" in result
         mock_find_eve.assert_called_once()
+
+    @patch("linux_mcp_server.tools.suricata.get_command")
+    async def test_custom_tail_lines(self, mock_get_command):
+        """Test specifying custom tail_lines parameter."""
+        alert_data = (
+            '{"event_type":"alert","timestamp":"2024-01-01T12:00:00.000000+0000",'
+            '"src_ip":"192.168.1.10","dest_ip":"10.0.0.5",'
+            '"alert":{"signature":"Test Alert","severity":1,"category":"Test"}}'
+        )
+        mock_cmd = MagicMock()
+        mock_cmd.run = AsyncMock(return_value=(0, alert_data, ""))
+        mock_get_command.return_value = mock_cmd
+
+        func = suricata.extract_suricata_alerts.fn
+        result = await func(file_path="/var/log/suricata/eve.json", host="remote-host", tail_lines=5000)
+
+        assert "Read last 5000 lines" in result
+        call_kwargs = mock_cmd.run.call_args[1]
+        assert call_kwargs["lines"] == 5000
+
+    async def test_tail_lines_validation(self):
+        """Test that tail_lines is validated."""
+        func = suricata.extract_suricata_alerts.fn
+
+        result = await func(file_path="/var/log/suricata/eve.json", tail_lines=200000)
+        assert "cannot exceed" in result

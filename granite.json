@@ -1,0 +1,76 @@
+{
+  "model": "granite4:small-h",
+  "loop-limit": "25",
+  "enabledTools": {
+    "linux-mcp-server.get_journal_logs": true,
+    "linux-mcp-server.get_audit_logs": true,
+    "linux-mcp-server.read_log_file": true,
+    "linux-mcp-server.get_network_interfaces": true,
+    "linux-mcp-server.get_network_connections": true,
+    "linux-mcp-server.get_listening_ports": true,
+    "linux-mcp-server.list_processes": true,
+    "linux-mcp-server.get_process_info": true,
+    "linux-mcp-server.list_services": true,
+    "linux-mcp-server.get_service_status": true,
+    "linux-mcp-server.get_service_logs": true,
+    "linux-mcp-server.list_block_devices": true,
+    "linux-mcp-server.list_directories": true,
+    "linux-mcp-server.list_files": true,
+    "linux-mcp-server.read_file": true,
+    "linux-mcp-server.get_system_information": true,
+    "linux-mcp-server.get_cpu_information": true,
+    "linux-mcp-server.get_memory_information": true,
+    "linux-mcp-server.get_disk_usage": true,
+    "linux-mcp-server.get_hardware_information": true,
+    "linux-mcp-server.read_suricata_eve_json": true,
+    "linux-mcp-server.extract_suricata_alerts": true
+  },
+  "contextSettings": {
+    "retainContext": true
+  },
+  "modelSettings": {
+    "thinkingMode": true,
+    "showThinking": false
+  },
+  "agentSettings": {
+    "loopLimit": 20
+  },
+  "modelConfig": {
+    "system_prompt": "",
+    "num_keep": null,
+    "seed": null,
+    "num_predict": null,
+    "top_k": null,
+    "top_p": null,
+    "min_p": null,
+    "typical_p": null,
+    "repeat_last_n": null,
+    "temperature": null,
+    "repeat_penalty": null,
+    "presence_penalty": null,
+    "frequency_penalty": null,
+    "stop": null,
+    "num_ctx": null,
+    "num_batch": null
+  },
+  "displaySettings": {
+    "showToolExecution": true,
+    "showMetrics": false
+  },
+  "hilSettings": {
+    "enabled": true
+  },
+  "mcpServers": {
+    "linux-mcp-server": {
+      "command": "/home/pouchou/.local/share/uv/tools/linux-mcp-server/bin/linux-mcp-server",
+      "args": [],
+      "env": {
+           "LINUX_MCP_ALLOWED_LOG_PATHS": "/var/log/messages,/var/log/secure,/var/log/audit/audit.log,/var/log/auth.log,/var/log/suricata/eve.json,/var/log/syslog,/var/log/nginx/access.log",
+           "LINUX_MCP_USER": "root",
+	   "LINUX_MCP_LOG_LEVEL": "INFO",
+           "LINUX_MCP_SSH_KEY_PATH": "~/.ssh/id_rsa"
+      },
+      "disabled": false
+    }
+  }
+}
