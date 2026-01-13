@@ -1,6 +1,7 @@
 """Tests for Suricata eve.json reader tools."""
 
 from pathlib import Path
+from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -51,13 +52,21 @@ def sample_eve_data():
 class TestReadSuricataEveJson:
     """Tests for read_suricata_eve_json tool."""
 
-    async def test_rejects_remote_execution(self):
-        """Test that remote execution is rejected."""
-        # Access the underlying function from the FunctionTool wrapper
+    @patch("linux_mcp_server.tools.suricata.get_command")
+    async def test_supports_remote_execution(self, mock_get_command):
+        """Test that remote execution is supported via SSH."""
+        # Mock the read_log_file command
+        mock_cmd = MagicMock()
+        mock_cmd.run = AsyncMock(
+            return_value=(0, '{"event_type":"alert","timestamp":"2024-01-01T12:00:00.000000+0000"}', "")
+        )
+        mock_get_command.return_value = mock_cmd
+
         func = suricata.read_suricata_eve_json.fn
         result = await func(file_path="/var/log/suricata/eve.json", host="remote-host")
 
-        assert "Error: Remote execution not supported" in result
+        assert "remote-host" in result
+        mock_get_command.assert_called_once_with("read_log_file")
 
     @patch("linux_mcp_server.tools.suricata.Path")
     async def test_path_validation_rejects_unauthorized_path(self, mock_path_class):
@@ -178,12 +187,25 @@ class TestReadSuricataEveJson:
 class TestExtractSuricataAlerts:
     """Tests for extract_suricata_alerts tool."""
 
-    async def test_rejects_remote_execution(self):
-        """Test that remote execution is rejected."""
+    @patch("linux_mcp_server.tools.suricata.get_command")
+    async def test_supports_remote_execution(self, mock_get_command):
+        """Test that remote execution is supported via SSH."""
+        # Mock the read_log_file command with sample alert data
+        alert_data = (
+            '{"event_type":"alert","timestamp":"2024-01-01T12:00:00.000000+0000",'
+            '"src_ip":"192.168.1.10","dest_ip":"10.0.0.5",'
+            '"alert":{"signature":"Test Alert","severity":1,"category":"Test"}}'
+        )
+        mock_cmd = MagicMock()
+        mock_cmd.run = AsyncMock(return_value=(0, alert_data, ""))
+        mock_get_command.return_value = mock_cmd
+
         func = suricata.extract_suricata_alerts.fn
         result = await func(file_path="/var/log/suricata/eve.json", host="remote-host")
 
-        assert "Error: Remote execution not supported" in result
+        assert "remote-host" in result
+        assert "Total alerts:" in result
+        mock_get_command.assert_called_once_with("read_log_file")
 
     @patch("linux_mcp_server.tools.suricata.Path")
     async def test_path_validation_rejects_unauthorized_path(self, mock_path_class):

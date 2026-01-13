@@ -8,8 +8,8 @@ import polars as pl
 from mcp.types import ToolAnnotations
 
 from linux_mcp_server.audit import log_tool_call
+from linux_mcp_server.commands import get_command
 from linux_mcp_server.server import mcp
-from linux_mcp_server.utils.decorators import disallow_local_execution_in_containers
 from linux_mcp_server.utils.types import Host
 
 
@@ -26,8 +26,12 @@ def _find_eve_json() -> Path | None:
     ]
 
     for path in search_paths:
-        if path.exists() and path.is_file():
-            return path
+        try:
+            if path.exists() and path.is_file():
+                return path
+        except (PermissionError, OSError):
+            # Skip paths we don't have permission to access
+            continue
 
     return None
 
@@ -46,7 +50,7 @@ def _validate_path(file_path: str) -> tuple[Path, None] | tuple[None, str]:
         auto_path = _find_eve_json()
         if auto_path:
             return auto_path, None
-        return None, "Error: No eve.json file found in standard locations"
+        return None, "Error: No eve.json file found in standard locations (or insufficient permissions)"
 
     path = Path(file_path).resolve()
     allowed_dirs = [
@@ -61,11 +65,16 @@ def _validate_path(file_path: str) -> tuple[Path, None] | tuple[None, str]:
             f"or /home/tsec/tpotce/data/suricata/log. Got: {file_path}"
         )
 
-    if not path.exists():
-        return None, f"Error: File not found: {file_path}"
+    try:
+        if not path.exists():
+            return None, f"Error: File not found: {file_path}"
 
-    if not path.is_file():
-        return None, f"Error: Path is not a file: {file_path}"
+        if not path.is_file():
+            return None, f"Error: Path is not a file: {file_path}"
+    except PermissionError:
+        return None, f"Error: Permission denied accessing: {file_path}"
+    except OSError as e:
+        return None, f"Error: Cannot access file {file_path}: {str(e)}"
 
     return path, None
 
@@ -112,7 +121,6 @@ def _apply_alert_filters(
     annotations=ToolAnnotations(readOnlyHint=True),
 )
 @log_tool_call
-@disallow_local_execution_in_containers
 async def read_suricata_eve_json(
     file_path: str = "",
     event_type: Optional[str] = None,
@@ -125,7 +133,7 @@ async def read_suricata_eve_json(
         file_path: Path to the eve.json file (default: auto-detect in standard locations)
         event_type: Optional filter by event_type (e.g., 'alert', 'flow', 'dns', 'http')
         limit: Optional limit of rows to return (default: None for all rows)
-        host: Optional remote host (not supported for this tool)
+        host: Optional remote host to connect to via SSH
 
     Returns:
         Formatted output with Suricata events
@@ -135,21 +143,48 @@ async def read_suricata_eve_json(
         - Path restricted to /var/log/suricata/, /var/log/, and T-Pot CE paths
         - Validates file exists and is readable
         - Auto-detects eve.json in standard locations if no path provided
+        - Supports remote execution via SSH
     """
+    # For remote execution, we need to read the file content via SSH
     if host:
-        return "Error: Remote execution not supported for Suricata tools"
+        # Validate path on remote host
+        if not file_path or file_path.strip() == "":
+            file_path = "/var/log/suricata/eve.json"  # Default path
 
-    validated_path, error = _validate_path(file_path)
-    if error:
-        return error
+        validated_path, error = _validate_path(file_path)
+        if error and "Permission denied" not in error:
+            return error
 
-    # Type narrowing: at this point validated_path is Path, not None
-    assert validated_path is not None
+        # Use tail to read last N lines (eve.json files can be huge)
+        # Default to 1000 lines if no limit specified
+        lines_to_read = limit if limit else 1000
+        cmd = get_command("read_log_file")
+        returncode, stdout, stderr = await cmd.run(host=host, log_path=file_path, lines=lines_to_read)
+
+        if returncode != 0:
+            return f"Error reading remote file: {stderr}"
+
+        # Parse the NDJSON content
+        try:
+            import io
+
+            df = pl.read_ndjson(io.StringIO(stdout))
+        except Exception as e:
+            return f"Error parsing remote eve.json: {str(e)}"
+    else:
+        # Local execution
+        validated_path, error = _validate_path(file_path)
+        if error:
+            return error
+
+        assert validated_path is not None
+
+        try:
+            df = pl.read_ndjson(validated_path)
+        except Exception as e:
+            return f"Error reading Suricata eve.json file: {str(e)}"
 
     try:
-        # Read NDJSON (newline-delimited JSON) file with Polars
-        df = pl.read_ndjson(validated_path)
-
         # Filter by event_type if specified
         if event_type:
             if "event_type" in df.columns:
@@ -163,8 +198,9 @@ async def read_suricata_eve_json(
 
         # Format output
         total_rows = len(df)
+        host_prefix = f" on {host}" if host else ""
         output_lines = [
-            f"Suricata eve.json: {file_path}",
+            f"Suricata eve.json{host_prefix}: {file_path}",
             f"Total events: {total_rows}",
         ]
 
@@ -180,7 +216,7 @@ async def read_suricata_eve_json(
         return "\n".join(output_lines)
 
     except Exception as e:
-        return f"Error reading Suricata eve.json file: {str(e)}"
+        return f"Error processing Suricata eve.json file: {str(e)}"
 
 
 @mcp.tool(
@@ -189,7 +225,6 @@ async def read_suricata_eve_json(
     annotations=ToolAnnotations(readOnlyHint=True),
 )
 @log_tool_call
-@disallow_local_execution_in_containers
 async def extract_suricata_alerts(
     file_path: str = "",
     severity: Optional[int] = None,
@@ -208,7 +243,7 @@ async def extract_suricata_alerts(
         src_ip: Optional filter by source IP address
         dest_ip: Optional filter by destination IP address
         limit: Optional limit of alerts to return (default: None for all alerts)
-        host: Optional remote host (not supported for this tool)
+        host: Optional remote host to connect to via SSH
 
     Returns:
         Formatted output with Suricata alerts and statistics
@@ -218,21 +253,48 @@ async def extract_suricata_alerts(
         - Path restricted to /var/log/suricata/, /var/log/, and T-Pot CE paths
         - Validates file exists and is readable
         - Auto-detects eve.json in standard locations if no path provided
+        - Supports remote execution via SSH
     """
+    # For remote execution, we need to read the file content via SSH
     if host:
-        return "Error: Remote execution not supported for Suricata tools"
+        # Validate path on remote host
+        if not file_path or file_path.strip() == "":
+            file_path = "/var/log/suricata/eve.json"  # Default path
 
-    validated_path, error = _validate_path(file_path)
-    if error:
-        return error
+        validated_path, error = _validate_path(file_path)
+        if error and "Permission denied" not in error:
+            return error
 
-    # Type narrowing: at this point validated_path is Path, not None
-    assert validated_path is not None
+        # Use tail to read last N lines (eve.json files can be huge)
+        # Read more lines for alerts to have enough data after filtering
+        lines_to_read = 10000  # Read last 10k lines to find alerts
+        cmd = get_command("read_log_file")
+        returncode, stdout, stderr = await cmd.run(host=host, log_path=file_path, lines=lines_to_read)
+
+        if returncode != 0:
+            return f"Error reading remote file: {stderr}"
+
+        # Parse the NDJSON content
+        try:
+            import io
+
+            df = pl.read_ndjson(io.StringIO(stdout))
+        except Exception as e:
+            return f"Error parsing remote eve.json: {str(e)}"
+    else:
+        # Local execution
+        validated_path, error = _validate_path(file_path)
+        if error:
+            return error
+
+        assert validated_path is not None
+
+        try:
+            df = pl.read_ndjson(validated_path)
+        except Exception as e:
+            return f"Error reading Suricata eve.json file: {str(e)}"
 
     try:
-        # Read NDJSON file with Polars
-        df = pl.read_ndjson(validated_path)
-
         # Filter only alert events
         if "event_type" not in df.columns:
             return f"Error: 'event_type' column not found in {file_path}"
@@ -240,7 +302,8 @@ async def extract_suricata_alerts(
         df = df.filter(pl.col("event_type") == "alert")
 
         if len(df) == 0:
-            return f"No alerts found in {file_path}"
+            host_prefix = f" on {host}" if host else ""
+            return f"No alerts found{host_prefix} in {file_path}"
 
         # Apply filters
         df, filters_applied = _apply_alert_filters(df, severity, signature_contains, src_ip, dest_ip)
@@ -271,8 +334,9 @@ async def extract_suricata_alerts(
         # Create summary statistics
         alerts_df = pl.DataFrame(alerts_data)
 
+        host_prefix = f" on {host}" if host else ""
         output_lines = [
-            f"Suricata Alerts Analysis: {file_path}",
+            f"Suricata Alerts Analysis{host_prefix}: {file_path}",
             f"Total alerts: {total_alerts}",
         ]
 
